@@ -4,15 +4,13 @@
 Diffusion models (IC, LT, etc.).
 
 For now we implement:
-- Independent Cascade (IC) diffusion
-- A helper to estimate expected spread via Monte Carlo
+- Independent Cascade (IC) diffusion for a single simulation run.
 """
 
-from typing import List, Set, Any, Optional, Literal
+from typing import List, Set, Any, Optional
 import random
 
 import networkx as nx
-
 
 
 class DiffusionResult:
@@ -21,9 +19,10 @@ class DiffusionResult:
 
     Attributes:
         activated_by_step: list of sets, where activated_by_step[t]
-            is the set of nodes newly activated at step t (t starts at 0 for seeds).
+            is the set of nodes newly activated at step t (t=0 is the seeds).
         all_activated: set of all nodes that were ever activated.
     """
+
     def __init__(self, activated_by_step: List[Set[Any]]):
         self.activated_by_step: List[Set[Any]] = activated_by_step
         all_nodes: Set[Any] = set()
@@ -66,11 +65,11 @@ def run_ic_diffusion(
     if rng is None:
         rng = random.Random()
 
-    # Ensure we don't mutate the original seed set
-    current_active: Set[Any] = set(seed_set)
-    activated_by_step: List[Set[Any]] = [set(seed_set)]
+    # copy seed set so we don't mutate input
+    seed_set = set(seed_set)
 
-    # Track which nodes have *ever* been active
+    # step 0 = seeds
+    activated_by_step: List[Set[Any]] = [set(seed_set)]
     ever_active: Set[Any] = set(seed_set)
 
     step = 0
@@ -78,18 +77,16 @@ def run_ic_diffusion(
         if max_steps is not None and step >= max_steps:
             break
 
-        newly_active: Set[Any] = set()
-
-        # Only nodes that were newly activated in the previous step
-        # get to try activating neighbors now.
         frontier = activated_by_step[-1]
         if not frontier:
-            break  # no one to spread from
+            break  # nothing left to spread from
+
+        newly_active: Set[Any] = set()
 
         for u in frontier:
             for v in graph.neighbors(u):
                 if v in ever_active:
-                    continue  # already active from a previous step
+                    continue  # already active before
                 if rng.random() < activation_prob:
                     newly_active.add(v)
 
@@ -101,118 +98,3 @@ def run_ic_diffusion(
         step += 1
 
     return DiffusionResult(activated_by_step)
-
-
-def estimate_spread(
-    graph: nx.Graph,
-    seed_set: Set[Any],
-    model: Literal["IC"] = "IC",
-    num_runs: int = 50,
-    activation_prob: float = 0.1,
-    max_steps: Optional[int] = None,
-    rng_seed: Optional[int] = None,
-) -> float:
-    """
-    Estimate expected spread (expected number of activated nodes)
-    under a given diffusion model via Monte Carlo.
-
-    Currently supported:
-        - model="IC": Independent Cascade
-
-    Args:
-        graph: Input graph.
-        seed_set: Seed nodes.
-        model: Diffusion model name.
-        num_runs: Number of Monte Carlo runs.
-        activation_prob: IC activation probability.
-        max_steps: Optional limit on number of steps.
-        rng_seed: Optional seed for reproducibility.
-
-    Returns:
-        Estimated expected number of activated nodes (float).
-    """
-    if model != "IC":
-        raise ValueError(f"Unsupported diffusion model: {model}")
-
-    rng = random.Random(rng_seed)
-    total = 0.0
-
-    for _ in range(num_runs):
-        # Use a separate RNG state per run to be explicit
-        run_rng = random.Random(rng.random())
-        result = run_ic_diffusion(
-            graph,
-            seed_set,
-            activation_prob=activation_prob,
-            max_steps=max_steps,
-            rng=run_rng,
-        )
-        total += result.num_activated()
-
-    return total / num_runs
-
-
-# We should check to see if the optimal seed set for diffusion is the same? or how different is it? 
-# - Seed set of what? 
-# - Optimal 5 node seed set.. Optial 10 node seed set? 
-#   - Need a way to calculate optimal seed set...
-#
-
-# Random Notes; 
-#  seed = [0,1,2,3]
-    
-#     [
-        
-#         0
-#         ..
-#         n nodes
-#     ]
-    
-#     Orginal graph ..
-    
-#     original_graph_results = [
-#         [1,1,1,1,0,0,0,0...n] = timestep 1
-#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 1 round
-#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 1 round
-#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 1 round
-#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 1 round
-#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 1 round
-#         ..
-#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 100 rounds
-#     ] * 100 times. 
-    
-#     []
-    
-#     Graph 
-#     Number of simulations  = 100 
-    
-#     for number in number_of_simulations:
-#         results_of_one_sim = run_ic_diffusion(Graph, num_steps =100, probabilty_of_activation=0.1, seed = number)
-#         all_results += results_of_one_sim
-    
-#     all_results == Combine... 
-
-        
-    
-#     sparse graph = Sparsify(orignal_grapm)
-    
-    
-#     original_graph_results = [
-#         [1,1,1,1,0,0,0,0...n] = timestep 1
-#         [1,1,1,1,0,1,0,0...n] = timestep 2 -- after 1 round
-#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 1 round
-#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 1 round
-#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 1 round
-#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 1 round
-#         ..
-#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 100 rounds
-#     ]
-
-#     Simulation with sparse Graphs: 
-        
-#     sparse graph_results = .... 
-    
-#     calcualte_results = claculate metrics( original_graph_results, sparse_graph_results)
-    
-#     - a few numbers... 
-    
