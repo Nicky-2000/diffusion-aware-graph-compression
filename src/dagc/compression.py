@@ -52,7 +52,25 @@ def compress_graph(
     ...
 
 
-def paper_XYZ_sparsify(
+def This_new_method(
+    graph: nx.Graph,
+    keep_ratio: float,
+    rng_seed: int | None = None,
+) -> CompressionResult:
+    """
+    Randomly keep a fraction of edges.
+
+    Args:
+        graph: Original graph.
+        keep_ratio: Fraction of edges to keep, in (0, 1].
+        rng_seed: Optional random seed.
+
+    Returns:
+        CompressionResult with a graph that has the same nodes but fewer edges.
+    """
+    ...
+    
+    def paper_XYZ_sparsify(
     graph: nx.Graph,
     keep_ratio: float,
     rng_seed: int | None = None,
