@@ -14,6 +14,7 @@ import random
 import networkx as nx
 
 
+
 class DiffusionResult:
     """
     Container for the result of a single diffusion run.
@@ -23,7 +24,6 @@ class DiffusionResult:
             is the set of nodes newly activated at step t (t starts at 0 for seeds).
         all_activated: set of all nodes that were ever activated.
     """
-
     def __init__(self, activated_by_step: List[Set[Any]]):
         self.activated_by_step: List[Set[Any]] = activated_by_step
         all_nodes: Set[Any] = set()
@@ -150,3 +150,69 @@ def estimate_spread(
         total += result.num_activated()
 
     return total / num_runs
+
+
+# We should check to see if the optimal seed set for diffusion is the same? or how different is it? 
+# - Seed set of what? 
+# - Optimal 5 node seed set.. Optial 10 node seed set? 
+#   - Need a way to calculate optimal seed set...
+#
+
+# Random Notes; 
+#  seed = [0,1,2,3]
+    
+#     [
+        
+#         0
+#         ..
+#         n nodes
+#     ]
+    
+#     Orginal graph ..
+    
+#     original_graph_results = [
+#         [1,1,1,1,0,0,0,0...n] = timestep 1
+#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 1 round
+#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 1 round
+#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 1 round
+#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 1 round
+#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 1 round
+#         ..
+#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 100 rounds
+#     ] * 100 times. 
+    
+#     []
+    
+#     Graph 
+#     Number of simulations  = 100 
+    
+#     for number in number_of_simulations:
+#         results_of_one_sim = run_ic_diffusion(Graph, num_steps =100, probabilty_of_activation=0.1, seed = number)
+#         all_results += results_of_one_sim
+    
+#     all_results == Combine... 
+
+        
+    
+#     sparse graph = Sparsify(orignal_grapm)
+    
+    
+#     original_graph_results = [
+#         [1,1,1,1,0,0,0,0...n] = timestep 1
+#         [1,1,1,1,0,1,0,0...n] = timestep 2 -- after 1 round
+#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 1 round
+#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 1 round
+#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 1 round
+#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 1 round
+#         ..
+#         [1,1,1,1,0,0,0,1...n] = timestep 2 -- after 100 rounds
+#     ]
+
+#     Simulation with sparse Graphs: 
+        
+#     sparse graph_results = .... 
+    
+#     calcualte_results = claculate metrics( original_graph_results, sparse_graph_results)
+    
+#     - a few numbers... 
+    
