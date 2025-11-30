@@ -1,17 +1,18 @@
-# scripts/run_random_sparsification_experiment.py
+# scripts/run_gnn_sparsification_experiment.py
 
 """
-Run a simple end-to-end experiment:
+Run an end-to-end experiment using a learned GNN-based sparsifier:
 
 1. Load a base graph (e.g., BA(1000, 3)).
 2. Choose a seed set S.
 3. Run IC diffusion R times on the original graph.
-4. Randomly sparsify the graph while preserving connectivity.
-5. Run IC diffusion R times on the sparsified graph.
+4. Use a trained GNN sparsifier to score edges and keep the top-M edges.
+5. Run IC diffusion R times on the GNN-sparsified graph.
 6. Summarize diffusion behavior and compare metrics.
 
-This gives a baseline for:
-    "How much does naive random edge sparsification distort diffusion?"
+This evaluates:
+    "How much does a learned GNN sparsifier preserve diffusion behavior
+     compared to the original graph?"
 """
 
 import sys
@@ -26,12 +27,17 @@ sys.path.append(str(ROOT / "src"))
 
 from dagc.graphs import read_graph, generate_seed_set
 from dagc.diffusion.independent_cascade import run_ic_diffusion
-from dagc.sparsifiers.classical.random_edge import random_edge_sparsify
 from dagc.metrics import (
     summarize_diffusion_results,
     compare_diffusion_summaries,
     topk_jaccard_from_summaries,
     spread_difference,
+)
+
+# NEW: GNN-based sparsifier API (to be implemented)
+from dagc.compression.learned_sparsify import (
+    load_gnn_sparsifier,
+    gnn_edge_sparsify,
 )
 
 
@@ -47,13 +53,19 @@ def main():
     keep_ratio = 0.5  # keep 50% of edges → remove 50%
     base_seed = 12345
 
-    print("=== Random Edge Sparsification Experiment ===")
+    # Path to a trained GNN checkpoint (to be produced by your training script)
+    model_checkpoint = ROOT / "checkpoints" / "gnn_sparsifier.pt"
+    device = "cpu"  # or "cuda" if available
+
+    print("=== GNN Edge Sparsification Experiment ===")
     print(f"Graph path:       {graph_path}")
     print(f"Num runs:         {num_runs}")
     print(f"Seed set size:    {seed_set_size}")
     print(f"Activation prob:  {activation_prob}")
-    print(f"Keep ratio:       {keep_ratio} (≈ 10% edges removed)")
+    print(f"Keep ratio:       {keep_ratio}")
     print(f"Base RNG seed:    {base_seed}")
+    print(f"Model checkpoint: {model_checkpoint}")
+    print(f"Device:           {device}")
     print()
 
     # -----------------------------
@@ -67,6 +79,7 @@ def main():
 
     if not nx.is_connected(G):
         print("WARNING: Original graph is not connected!")
+    print()
 
     # -----------------------------
     # Generate seed set
@@ -100,27 +113,48 @@ def main():
     print()
 
     # -----------------------------
-    # Sparsify graph
+    # Load GNN sparsifier
     # -----------------------------
-    print(f"Sparsifying graph with keep_ratio={keep_ratio} ...")
-    comp = random_edge_sparsify(
+    print("Loading GNN sparsifier model...")
+    if not model_checkpoint.exists():
+        print(f"ERROR: Model checkpoint not found at: {model_checkpoint}")
+        print("       Train the GNN sparsifier first, then re-run this script.")
+        sys.exit(1)
+
+    model = load_gnn_sparsifier(
+        checkpoint_path=str(model_checkpoint),
+        device=device,
+    )
+    print("GNN model loaded.")
+    print()
+
+    # -----------------------------
+    # Sparsify graph using GNN
+    # -----------------------------
+    print(f"Sparsifying graph with keep_ratio={keep_ratio} using GNN...")
+    comp = gnn_edge_sparsify(
         graph=G,
         keep_ratio=keep_ratio,
-        rng_seed=base_seed + 9999,
+        model=model,
+        device=device,
+        ensure_connected=True,  # try to keep the largest component intact
     )
+
+    # We assume `comp` is a small struct / namespace with at least `.graph`
+    # (mirrors the random_edge_sparsify API)
     H = comp.graph
     n_H = H.number_of_nodes()
     m_H = H.number_of_edges()
     print(f"Sparsified graph: |V| = {n_H}, |E| = {m_H}")
 
     if not nx.is_connected(H):
-        print("WARNING: Sparsified graph is not connected (this should not happen).")
+        print("WARNING: Sparsified graph is not connected.")
     print()
 
     # -----------------------------
-    # Run IC on sparsified graph
+    # Run IC on GNN-sparsified graph
     # -----------------------------
-    print(f"Running IC diffusion on sparsified graph for {num_runs} runs...")
+    print(f"Running IC diffusion on GNN-sparsified graph for {num_runs} runs...")
     comp_results = []
     for i in range(num_runs):
         rng = random.Random(base_seed + 10_000 + i)
@@ -137,13 +171,16 @@ def main():
         comp_results,
         all_nodes=G.nodes(),  # keep node universe aligned with original graph
     )
-    print(f"Sparsified graph: expected spread ≈ {comp_summary.expected_spread:.2f}")
+    print(
+        f"GNN-sparsified graph: expected spread ≈ "
+        f"{comp_summary.expected_spread:.2f}"
+    )
     print()
 
     # -----------------------------
     # Metrics: spread + activation probs
     # -----------------------------
-    print("Comparing diffusion summaries (original vs sparsified)...")
+    print("Comparing diffusion summaries (original vs GNN-sparsified)...")
     summary_metrics = compare_diffusion_summaries(
         original=orig_summary,
         compressed=comp_summary,
@@ -156,16 +193,25 @@ def main():
     )
 
     print("---- Spread Metrics ----")
-    print(f"Expected spread (orig):       {summary_metrics['spread_original']:.3f}")
-    print(f"Expected spread (sparse):     {summary_metrics['spread_compressed']:.3f}")
-    print(f"Abs diff (sparse - orig):     {summary_metrics['spread_abs_diff']:.3f}")
-    print(f"Rel error (vs orig σ):        {summary_metrics['spread_rel_error']:.4f}")
-    print(f"Rel diff / |V|:               {rel_spread_diff_by_V:.4f}")
+    print(f"Expected spread (orig):          {summary_metrics['spread_original']:.3f}")
+    print(
+        f"Expected spread (GNN-sparse):    "
+        f"{summary_metrics['spread_compressed']:.3f}"
+    )
+    print(
+        f"Abs diff (GNN-sparse - orig):    "
+        f"{summary_metrics['spread_abs_diff']:.3f}"
+    )
+    print(
+        f"Rel error (vs orig σ):           "
+        f"{summary_metrics['spread_rel_error']:.4f}"
+    )
+    print(f"Rel diff / |V|:                  {rel_spread_diff_by_V:.4f}")
     print()
 
     print("---- Activation Probability Metrics ----")
-    print(f"MSE over P(activated):        {summary_metrics['prob_mse']:.6f}")
-    print(f"MAE over P(activated):        {summary_metrics['prob_mae']:.6f}")
+    print(f"MSE over P(activated):           {summary_metrics['prob_mse']:.6f}")
+    print(f"MAE over P(activated):           {summary_metrics['prob_mae']:.6f}")
     print()
 
     # -----------------------------
@@ -179,7 +225,10 @@ def main():
             compressed=comp_summary,
             k=k,
         )
-        print(f"Top-{k} Jaccard (most activated nodes): {topk_jacc:.3f}")
+        print(
+            f"Top-{k} Jaccard (most activated nodes): "
+            f"{topk_jacc:.3f}"
+        )
 
     print()
     print("=== Done. ===")
