@@ -24,7 +24,7 @@ import networkx as nx
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT / "src"))
 
-from dagc.graphs import read_graph, generate_seed_set
+from dagc.data.graph_loading import read_graph, generate_seed_set
 from dagc.diffusion.independent_cascade import run_ic_diffusion
 from dagc.sparsifiers.classical.random_edge import random_edge_sparsify
 from dagc.metrics import (

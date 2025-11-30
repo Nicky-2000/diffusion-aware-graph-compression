@@ -22,7 +22,7 @@ This module provides:
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Set
 
-from .diffusion.independent_cascade import DiffusionResult
+from ..diffusion.independent_cascade import DiffusionResult
 
 
 # ---------------------------------------------------------------------------

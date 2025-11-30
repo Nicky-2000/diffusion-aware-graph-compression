@@ -1,5 +1,3 @@
-# src/dagc/graphs.py
-
 """
 Graph loading and seed set generation utilities.
 
