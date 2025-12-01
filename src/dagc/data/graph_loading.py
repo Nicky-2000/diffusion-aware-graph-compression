@@ -1,125 +1,70 @@
-"""
-Graph loading and seed set generation utilities.
+# src/dagc/data/graph_loading.py
 
-This module provides:
-- read_graph: load a NetworkX graph from disk.
-- generate_seed_set: choose a set of seed nodes.
-- generate_multiple_seed_sets: convenience wrapper for repeated experiments.
-"""
-
-from typing import List, Set, Any
 import os
 import pickle
-import random
-
 import networkx as nx
+from typing import Optional
+import torch
 
 
-def read_graph(path: str, fmt: str = "edge_list") -> nx.Graph:
+def load_graphs_from_dir(dir_path: str) -> list[nx.Graph]:
     """
-    Load a graph from disk.
+    Load all .gpickle graphs from a directory and return them as a list.
+    Ignores non-gpickle files.
 
     Args:
-        path: Path to the graph file.
-        fmt: Format of the file. Supported options:
-             - "edge_list": plain text edge list (e.g. produced by nx.write_edgelist)
-             - "gpickle":  Python pickle of a NetworkX graph (our .gpickle files)
+        dir_path: directory containing *.gpickle graphs
 
     Returns:
-        A NetworkX graph (typically undirected).
-
-    Raises:
-        FileNotFoundError: if the path does not exist.
-        ValueError: if the format is not supported.
+        list of NetworkX Graph objects
     """
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Graph file not found: {path}")
-
-    if fmt == "edge_list":
-        # nodes will be read as strings by default; we can cast to int
-        G = nx.read_edgelist(path, nodetype=int)
-        return G
-    elif fmt == "gpickle":
-        with open(path, "rb") as f:
-            G = pickle.load(f)
-        if not isinstance(G, nx.Graph):
-            raise ValueError(f"Loaded object from {path} is not a NetworkX graph.")
-        return G
-    else:
-        raise ValueError(f"Unsupported graph format: {fmt}")
+    graphs = []
+    for fname in os.listdir(dir_path):
+        if fname.endswith(".gpickle"):
+            fpath = os.path.join(dir_path, fname)
+            with open(fpath, "rb") as f:
+                graphs.append(pickle.load(f))
+    return graphs
 
 
-def generate_seed_set(graph: nx.Graph, k: int, strategy: str = "random") -> Set[Any]:
+def graph_to_tensors(
+    G: nx.Graph, device: Optional[torch.device] = None
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Generate a single seed set of size k.
+    Turns a NetworkX Undirected graph G into:
+    - x: [num_nodes, in_dim] which is node features for each node
+    - edge_index: [2, num_edges_dir] (basically we have a src and dst list for each edge)
 
-    Args:
-        graph: Input graph.
-        k: Number of seeds to select (must be <= number of nodes in the graph).
-        strategy: How to choose seeds. Supported options:
-                  - "random": uniform random nodes
-                  - "high_degree": top-k nodes by degree
-
-    Returns:
-        A set of node IDs to use as seeds.
-
-    Raises:
-        ValueError: if k is invalid or strategy is unsupported.
+    This assuems that the nodes are labeled 0..n-1
     """
-    nodes = list(graph.nodes())
-    n = len(nodes)
 
-    if k <= 0:
-        raise ValueError(f"k must be positive, got {k}.")
-    if k > n:
-        raise ValueError(f"k={k} is larger than number of nodes in graph (n={n}).")
+    if device is None:
+        device = torch.device("cpu")
 
-    if strategy == "random":
-        chosen = random.sample(nodes, k)
-        return set(chosen)
+    n = G.number_of_nodes()
 
-    elif strategy == "high_degree":
-        # Sort nodes by degree (descending) and take top-k
-        # degree() returns (node, degree) pairs
-        degrees = sorted(graph.degree, key=lambda x: x[1], reverse=True)
-        top_k_nodes = [node for node, _deg in degrees[:k]]
-        return set(top_k_nodes)
+    # Simple Node features [degree, 1]. This can be expanded later
+    degrees = torch.tensor(
+        [G.degree(i) for i in range(n)], dtype=torch.float32, device=device
+    ).unsqueeze(
+        -1
+    )  # [n, 1]
+    ones = torch.ones((n, 1), dtype=torch.float32, device=device)
+    x = torch.cat([degrees, ones], dim=-1)  # [n, 2] (two features per node right now)
 
-    else:
-        raise ValueError(f"Unsupported seed selection strategy: {strategy}")
+    # Build directed edges
+    src_list = []
+    dst_list = []
+    for u, v in G.edges():
+        # Add one edge representing u->v
+        src_list.append(u)
+        dst_list.append(v)
+        # Add another one representing v->u
+        src_list.append(v)
+        dst_list.append(u)
 
+    edge_index = torch.tensor(
+        [src_list, dst_list], dtype=torch.long, device=device
+    )  # [2, num_edges_dir]
 
-def generate_multiple_seed_sets(
-    graph: nx.Graph,
-    num_sets: int,
-    k: int,
-    strategy: str = "random",
-) -> List[Set[Any]]:
-    """
-    Generate multiple seed sets for repeated experiments.
-
-    Note:
-        For strategy "high_degree", this will return the *same* seed set
-        num_sets times. For "random", each seed set will typically differ.
-
-    Args:
-        graph: Input graph.
-        num_sets: Number of seed sets to generate.
-        k: Size of each seed set.
-        strategy: Seed selection strategy passed through to generate_seed_set().
-
-    Returns:
-        A list of seed sets (each a set of node IDs).
-
-    Raises:
-        ValueError: if num_sets is not positive.
-    """
-    if num_sets <= 0:
-        raise ValueError(f"num_sets must be positive, got {num_sets}.")
-
-    seed_sets: List[Set[Any]] = []
-    for _ in range(num_sets):
-        seeds = generate_seed_set(graph, k=k, strategy=strategy)
-        seed_sets.append(seeds)
-
-    return seed_sets
+    return x, edge_index

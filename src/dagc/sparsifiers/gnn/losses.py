@@ -1,7 +1,7 @@
 import networkx as nx
 import torch
 
-from sparsifiers.gnn.utils import (
+from dagc.sparsifiers.gnn.utils import (
     compute_transition_matrix_from_graph,
     build_temp_weighted_graph_from_probs,
 )

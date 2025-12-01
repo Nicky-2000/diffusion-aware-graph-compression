@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import torch
 import torch.nn as nn
-from sparsifiers.gnn.layers import GNNEncoder
+from dagc.sparsifiers.gnn.layers import GNNEncoder
 
 
 @dataclass

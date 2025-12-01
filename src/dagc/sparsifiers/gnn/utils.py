@@ -2,48 +2,8 @@ from typing import Optional
 import networkx as nx
 import torch
 
-
-def graph_to_tensors(
-    G: nx.Graph, device: Optional[torch.device] = None
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Turns a NetworkX Undirected graph G into:
-    - x: [num_nodes, in_dim] which is node features for each node
-    - edge_index: [2, num_edges_dir] (basically we have a src and dst list for each edge)
-
-    This assuems that the nodes are labeled 0..n-1
-    """
-
-    if device is None:
-        device = torch.device("cpu")
-
-    n = G.number_of_nodes()
-
-    # Simple Node features [degree, 1]. This can be expanded later
-    degrees = torch.tensor(
-        [G.degree(i) for i in range(n)], dtype=torch.float32, device=device
-    ).unsqueeze(
-        -1
-    )  # [n, 1]
-    ones = torch.ones((n, 1), dtype=torch.float32, device=device)
-    x = torch.cat([degrees, ones], dim=-1)  # [n, 2] (two features per node right now)
-
-    # Build directed edges
-    src_list = []
-    dst_list = []
-    for u, v in G.edges():
-        # Add one edge representing u->v
-        src_list.append(u)
-        dst_list.append(v)
-        # Add another one representing v->u
-        src_list.append(v)
-        dst_list.append(u)
-
-    edge_index = torch.tensor(
-        [src_list, dst_list], dtype=torch.long, device=device
-    )  # [2, num_edges_dir]
-
-    return x, edge_index
+from dagc.data.graph_loading import graph_to_tensors
+from dagc.sparsifiers.gnn.gnn_sparsifier import GNNSparsifier
 
 
 def compute_transition_matrix_from_graph(
@@ -140,3 +100,63 @@ def build_temp_weighted_graph_from_probs(
             seen.add(key)
 
     return G_tilde
+
+def sparsify_graph_with_model(
+    model: GNNSparsifier,
+    G: nx.Graph,
+    keep_ratio: float = 0.5,
+    device="cpu"
+):
+    """
+    Use a trained GNNSparsifier model to produce a new sparsified graph H
+    """
+    
+    # Step 1: Convert to tensors 
+    x, edge_index = graph_to_tensors(G, device=device)
+    
+    # Step 2: Model forward pass
+    model.eval()
+    with torch.no_grad():
+        out = model(x, edge_index)
+        probs = out.edge_probs # [num_edges_dir]
+    
+    # Step 3: Convert directed probs back to undirected edge scores
+    undirected_scores = _collapse_directed_edge_probs(edge_index, probs)
+    
+    # Step 4: Decide how many edges to keep 
+    num_edges_original = G.number_of_edges()
+    k = int(num_edges_original * keep_ratio)
+    
+    # Step 5: Keep top-k edges by score
+    
+    keep_edges = sorted(
+    undirected_scores.items(), 
+    key=lambda kv: kv[1],
+    reverse=True,
+    )[:k]
+    
+    # Build sparsified graph H
+    H = nx.Graph()
+    H.add_nodes_from(G.nodes())
+    
+    for (u,v), score in keep_edges:
+        H.add_edge(u,v)
+    
+    return H
+    
+    
+    
+    
+def _collapse_directed_edge_probs(edge_index, probs):
+    """
+    Convert directed edges (u→v and v→u) into a single undirected score.
+    """
+    src, dst = edge_index
+    scores = {}
+    for i in range(src.size(0)):
+        u, v = int(src[i]), int(dst[i])
+        key = (u, v) if u < v else (v, u)
+        scores.setdefault(key, []).append(float(probs[i]))
+
+    # average or max (we will pick max — usually more stable)
+    return {k: max(v_list) for k, v_list in scores.items()}
