@@ -1,33 +1,31 @@
-import networkx as nx
 import torch
+import networkx as nx
+from typing import Optional, Dict, Tuple
 
-from dagc.sparsifiers.gnn.utils import (
-    compute_transition_matrix_from_graph,
-    build_temp_weighted_graph_from_probs,
-)
+from .utils import build_temp_weighted_graph_from_probs, compute_transition_matrix_from_graph
 
 
 def random_walk_preservation_loss(
     G: nx.Graph,
-    edge_probs: torch.Tensor,  # [num_edges_dir]
-    edge_index: torch.Tensor,  # [2, num_edges_dir]
-    T_orig: torch.Tensor,  # [n, n] random-walk matrix of original graph
+    edge_probs: torch.Tensor,
+    edge_index: torch.Tensor,
+    T_orig: torch.Tensor,
     keep_ratio: float,
-    lambda_sparsity: float = 1.0,
+    lambda_sparsity: float,
     num_steps: int = 1,
-) -> torch.Tensor:
+    return_components: bool = False,
+) -> torch.Tensor | Tuple[torch.Tensor, Dict[str, float]]:
     """
-    Loss = ||T_tilde - T_orig||_F^2 + lambda_sparsity * (mean(p) - keep_ratio)^2
+    Total loss = RW loss + λ * sparsity loss.
 
-    where T_tilde is the k-step random-walk matrix built from a temporary weighted graph
-    whose edge weights are given by edge_probs.
+    If return_components=True, returns (total_loss, {"rw": ..., "sparsity": ...}).
     """
     device = edge_probs.device
 
-    # --- Build temporary weighted graph from probabilities ---
+    # 1) Build weighted temp graph from probs
     G_tilde = build_temp_weighted_graph_from_probs(G, edge_probs, edge_index)
 
-    # --- Compute learned k-step RW matrix using your helper ---
+    # 2) Compute k-step transition matrix T_tilde
     T_tilde = compute_transition_matrix_from_graph(
         G_tilde,
         device=device,
@@ -35,12 +33,21 @@ def random_walk_preservation_loss(
         num_steps=num_steps,
     )
 
-    # --- RW preservation term (Frobenius norm squared) ---
-    loss_rw = torch.sum((T_tilde - T_orig) ** 2)
+    # 3) Random-walk preservation term: ||T_tilde - T_orig||_F^2
+    diff = T_tilde - T_orig
+    rw_loss = torch.mean(diff * diff)  # Frobenius norm squared
 
-    # --- Sparsity term: encourage mean edge prob ≈ keep_ratio ---
-    mean_p = edge_probs.mean()
-    loss_sparsity = (mean_p - keep_ratio) ** 2
+    # 4) Sparsity term: encourage average prob ≈ keep_ratio
+    avg_prob = torch.mean(edge_probs)
+    sparsity_loss = (avg_prob - keep_ratio) ** 2
 
-    loss = loss_rw + lambda_sparsity * loss_sparsity
-    return loss
+    total_loss = rw_loss + lambda_sparsity * sparsity_loss
+
+    if not return_components:
+        return total_loss
+
+    comps = {
+        "rw_loss": float(rw_loss.detach().cpu()),
+        "sparsity_loss": float(sparsity_loss.detach().cpu()),
+    }
+    return total_loss, comps

@@ -2,7 +2,6 @@
 
 import os
 import torch
-from pathlib import Path
 
 from dagc.data.dataset_gnn import GraphDirectoryDataset, GraphSample
 from dagc.sparsifiers.gnn.gnn_sparsifier import GNNSparsifier
@@ -10,62 +9,54 @@ from dagc.sparsifiers.gnn.losses import random_walk_preservation_loss
 from dagc.sparsifiers.gnn.utils import compute_transition_matrix_from_graph
 
 
-def _get_device(device: str | torch.device | None) -> torch.device:
-    """
-    Small helper to resolve device, with Apple MPS support.
-
-    Usage:
-      - device="cpu"
-      - device="cuda"
-      - device="mps"
-      - device="auto"  -> prefers mps, then cuda, else cpu
-    """
+def _select_device(device: str | torch.device) -> torch.device:
     if isinstance(device, torch.device):
         return device
-
-    if device is None or device == "auto":
+    if device == "auto":
         if torch.backends.mps.is_available():
             return torch.device("mps")
         if torch.cuda.is_available():
             return torch.device("cuda")
         return torch.device("cpu")
-
     return torch.device(device)
 
 
-def _compute_dataset_loss(
-    dataset: GraphDirectoryDataset,
+def _eval_on_dataset(
     model: GNNSparsifier,
-    dev: torch.device,
+    dataset: GraphDirectoryDataset,
     keep_ratio: float,
-    lambda_sparsity: float,
     num_steps: int,
-) -> float:
+    lambda_sparsity: float,
+    device: torch.device,
+) -> tuple[float, float, float]:
     """
-    Evaluate random-walk preservation loss over all graphs in a dataset
-    (no gradient, model in eval mode).
+    Evaluate model on a dataset (no grad).
+    Returns:
+        avg_total_loss, avg_rw_loss, avg_sparsity_loss
     """
     model.eval()
-    total_loss = 0.0
+    total_loss_sum = 0.0
+    rw_loss_sum = 0.0
+    sparsity_loss_sum = 0.0
     num_graphs = 0
 
     with torch.no_grad():
         for idx in range(len(dataset)):
             sample: GraphSample = dataset[idx]
             G = sample.graph
-            x = sample.x.to(dev)
-            edge_index = sample.edge_index.to(dev)
+            x = sample.x.to(device)
+            edge_index = sample.edge_index.to(device)
 
             T_orig = compute_transition_matrix_from_graph(
                 G,
-                device=dev,
+                device=device,
                 weight_attr=None,
                 num_steps=num_steps,
             )
 
             out = model(x, edge_index)
 
-            loss = random_walk_preservation_loss(
+            total_loss, comps = random_walk_preservation_loss(
                 G=G,
                 edge_probs=out.edge_probs,
                 edge_index=edge_index,
@@ -73,65 +64,65 @@ def _compute_dataset_loss(
                 keep_ratio=keep_ratio,
                 lambda_sparsity=lambda_sparsity,
                 num_steps=num_steps,
+                return_components=True,
             )
 
-            total_loss += loss.item()
+            total_loss_sum += float(total_loss.item())
+            rw_loss_sum += comps["rw_loss"]
+            sparsity_loss_sum += comps["sparsity_loss"]
             num_graphs += 1
 
-    if num_graphs == 0:
-        return float("nan")
-    return total_loss / num_graphs
+    denom = max(1, num_graphs)
+    return (
+        total_loss_sum / denom,
+        rw_loss_sum / denom,
+        sparsity_loss_sum / denom,
+    )
 
 
 def train_gnn_sparsifier_on_dataset(
     train_dir: str,
-    val_dir: str | None = None,
-    keep_ratio: float = 0.5,
+    val_dir: str,
+    keep_ratio: float = 0.8,
     num_steps: int = 1,
-    hidden_dim: int = 64,
+    hidden_dim: int = 128,
     num_layers: int = 2,
-    edge_mlp_hidden_dim: int = 64,
-    num_epochs: int = 5,
+    edge_mlp_hidden_dim: int = 128,
+    num_epochs: int = 20,
     learning_rate: float = 1e-3,
     lambda_sparsity: float = 1.0,
-    device: str | torch.device = "auto",
+    device: str | torch.device = "cpu",
     print_every: int = 1,
     checkpoint_path: str | None = None,
-    save_best: bool = True,
-) -> GNNSparsifier:
+) -> tuple[GNNSparsifier, dict]:
     """
-    Train a GNNSparsifier on a directory of .gpickle graphs (BA train set).
+    Train a GNNSparsifier and evaluate on a validation set.
 
-    If val_dir is provided:
-      - compute validation loss each epoch
-      - keep the best model (lowest val loss) in memory
-      - optionally save that best model to checkpoint_path
-
-    If val_dir is None:
-      - only track / print train loss
-      - optionally save the final model at the end
+    Returns:
+        model, history
+    where history = {
+        "epoch": [...],
+        "train_loss": [...],
+        "val_loss": [...],
+        "train_rw_loss": [...],
+        "train_sparsity_loss": [...],
+        "val_rw_loss": [...],
+        "val_sparsity_loss": [...],
+    }
     """
-    dev = _get_device(device)
+    dev = _select_device(device)
     print(f"[train] Using device: {dev}")
 
-    # 1) Build datasets
     train_dataset = GraphDirectoryDataset(train_dir, device=dev)
+    val_dataset = GraphDirectoryDataset(val_dir, device=dev)
+    print(
+        f"[train] Loaded {len(train_dataset)} train graphs and {len(val_dataset)} val graphs"
+    )
 
-    val_dataset = None
-    if val_dir is not None:
-        val_dataset = GraphDirectoryDataset(val_dir, device=dev)
-        print(
-            f"[train] Loaded {len(train_dataset)} train graphs and "
-            f"{len(val_dataset)} val graphs"
-        )
-    else:
-        print(f"[train] Loaded {len(train_dataset)} train graphs (no val set).")
-
-    # 2) Infer in_dim from first sample
+    # Infer in_dim from a sample
     first_sample: GraphSample = train_dataset[0]
     in_dim = first_sample.x.size(1)
 
-    # 3) Init model + optimizer
     model = GNNSparsifier(
         in_dim=in_dim,
         hidden_dim=hidden_dim,
@@ -141,28 +132,26 @@ def train_gnn_sparsifier_on_dataset(
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-    # We'll store this config in the checkpoint so we can reconstruct the model later
-    config = {
-        "in_dim": in_dim,
-        "hidden_dim": hidden_dim,
-        "num_layers": num_layers,
-        "edge_mlp_hidden_dim": edge_mlp_hidden_dim,
-        "keep_ratio": keep_ratio,
-        "num_steps": num_steps,
-        "lambda_sparsity": lambda_sparsity,
+    history = {
+        "epoch": [],
+        "train_loss": [],
+        "val_loss": [],
+        "train_rw_loss": [],
+        "train_sparsity_loss": [],
+        "val_rw_loss": [],
+        "val_sparsity_loss": [],
+        "train_avg_prob": []
     }
-    
-    history = {"epoch": [], "train_loss": [], "val_loss": []}
+
     best_val_loss = float("inf")
     best_state_dict = None
-    
-    os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
 
-
-    # 4) Training loop
-    for epoch in range(num_epochs):
+    for epoch in range(1, num_epochs + 1):
         model.train()
-        epoch_loss = 0.0
+        train_total_sum = 0.0
+        train_rw_sum = 0.0
+        train_sparsity_sum = 0.0
+        avg_prob_sum = 0.0
         num_graphs = 0
 
         for idx in range(len(train_dataset)):
@@ -170,8 +159,6 @@ def train_gnn_sparsifier_on_dataset(
             G = sample.graph
             x = sample.x.to(dev)
             edge_index = sample.edge_index.to(dev)
-
-            num_graphs += 1
 
             T_orig = compute_transition_matrix_from_graph(
                 G,
@@ -181,10 +168,9 @@ def train_gnn_sparsifier_on_dataset(
             )
 
             optimizer.zero_grad()
-
             out = model(x, edge_index)
 
-            loss = random_walk_preservation_loss(
+            loss, comps = random_walk_preservation_loss(
                 G=G,
                 edge_probs=out.edge_probs,
                 edge_index=edge_index,
@@ -192,73 +178,82 @@ def train_gnn_sparsifier_on_dataset(
                 keep_ratio=keep_ratio,
                 lambda_sparsity=lambda_sparsity,
                 num_steps=num_steps,
+                return_components=True,
             )
+            avg_prob_sum += float(out.edge_probs.mean().detach().cpu())
 
             loss.backward()
             optimizer.step()
 
-            epoch_loss += loss.item()
+            train_total_sum += float(loss.item())
+            train_rw_sum += comps["rw_loss"]
+            train_sparsity_sum += comps["sparsity_loss"]
+            num_graphs += 1
 
-        avg_train_loss = epoch_loss / max(1, num_graphs)
-        avg_val_loss = float("nan")
+        denom = max(1, num_graphs)
+        train_loss = train_total_sum / denom
+        train_rw_loss = train_rw_sum / denom
+        train_sparsity_loss = train_sparsity_sum / denom
 
-        # 5) Validation loss (if we have a val set)
-        if val_dataset is not None:
-            avg_val_loss = _compute_dataset_loss(
-                dataset=val_dataset,
-                model=model,
-                dev=dev,
-                keep_ratio=keep_ratio,
-                lambda_sparsity=lambda_sparsity,
-                num_steps=num_steps,
+        # Validation
+        val_loss, val_rw_loss, val_sparsity_loss = _eval_on_dataset(
+            model=model,
+            dataset=val_dataset,
+            keep_ratio=keep_ratio,
+            num_steps=num_steps,
+            lambda_sparsity=lambda_sparsity,
+            device=dev,
+        )
+
+        history["epoch"].append(epoch)
+        history["train_loss"].append(train_loss)
+        history["val_loss"].append(val_loss)
+        history["train_rw_loss"].append(train_rw_loss)
+        history["train_sparsity_loss"].append(train_sparsity_loss)
+        history["val_rw_loss"].append(val_rw_loss)
+        history["val_sparsity_loss"].append(val_sparsity_loss)
+        history["train_avg_prob"].append(avg_prob_sum / num_graphs)
+
+
+        if epoch % print_every == 0:
+            print(
+                f"[Epoch {epoch}/{num_epochs}] "
+                f"train_loss = {train_loss:.6f} (rw={train_rw_loss:.4f}, sparse={train_sparsity_loss:.4f}) "
+                f"val_loss = {val_loss:.6f} (rw={val_rw_loss:.4f}, sparse={val_sparsity_loss:.4f})"
             )
 
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
-                best_state_dict = {
-                    k: v.detach().cpu().clone() for k, v in model.state_dict().items()
-                }
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_state_dict = model.state_dict()
 
-            if (epoch + 1) % print_every == 0:
-                print(
-                    f"[Epoch {epoch+1}/{num_epochs}] "
-                    f"train_loss = {avg_train_loss:.6f} "
-                    f"val_loss = {avg_val_loss:.6f}"
-                )
-        else:
-            if (epoch + 1) % print_every == 0:
-                print(
-                    f"[Epoch {epoch+1}/{num_epochs}] "
-                    f"train_loss = {avg_train_loss:.6f}"
-                )
-        
-        history["epoch"].append(epoch + 1)
-        history["train_loss"].append(avg_train_loss)
-        history["val_loss"].append(avg_val_loss)
-
-    # 6) Restore best model (if val set used)
-    if val_dataset is not None and best_state_dict is not None:
+    # Restore best
+    if best_state_dict is not None:
         print(f"[train] Restoring best model with val_loss = {best_val_loss:.6f}")
         model.load_state_dict(best_state_dict)
 
-    # 7) Save checkpoint if requested
+   # Save checkpoint (wrapped dict instead of raw state_dict)
     if checkpoint_path is not None:
-        ckpt_path = Path(checkpoint_path)
-        ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+        os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
 
-        # "best" = best val model, else final model
-        state = (
-            best_state_dict if (save_best and best_state_dict is not None) else model.state_dict()
-        )
-
-        torch.save(
-            {
-                "model_state_dict": state,
-                "config": config,
+        checkpoint = {
+            "model_state_dict": model.state_dict(),
+            "config": {
+                "in_dim": in_dim,
+                "hidden_dim": hidden_dim,
+                "num_layers": num_layers,
+                "edge_mlp_hidden_dim": edge_mlp_hidden_dim,
+                "keep_ratio": keep_ratio,
+                "num_steps": num_steps,
+                "lambda_sparsity": lambda_sparsity,
+                "learning_rate": learning_rate,
+                "train_dir": train_dir,
+                "val_dir": val_dir,
             },
-            ckpt_path,
-        )
-        print(f"[train] Saved checkpoint to: {ckpt_path}")
+            "history": history,
+        }
+
+        torch.save(checkpoint, checkpoint_path)
+        print(f"[train] Saved checkpoint to: {checkpoint_path}")
 
     return model, history
 
@@ -272,7 +267,7 @@ def load_gnn_sparsifier(
 
     Returns the model on the requested device, in eval() mode.
     """
-    dev = _get_device(device)
+    dev = _select_device(device)
     ckpt = torch.load(checkpoint_path, map_location=dev)
 
     config = ckpt.get("config", {})
