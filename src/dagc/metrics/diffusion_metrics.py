@@ -1,56 +1,24 @@
 # src/dagc/metrics.py
 
-"""
-Metrics for comparing diffusion behavior on graphs.
-
-This module provides:
-
-- Basic set-based metrics:
-    - jaccard_similarity(A, B)
-    - spread_difference(σ_G, σ_G', |V|)
-
-- Diffusion summaries:
-    - DiffusionSummary: collapsed representation of many diffusion runs
-    - summarize_diffusion_results(): list[DiffusionResult] -> DiffusionSummary
-
-- Comparison metrics between two summaries (e.g., original vs compressed graph):
-    - compare_diffusion_summaries(): spread + activation-probability errors
-    - topk_jaccard_from_summaries(): Jaccard similarity of top-K most
-      activated nodes (by activation probability).
-"""
-
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Set
 
-from ..diffusion.independent_cascade import DiffusionResult
+import networkx as nx
+
+from dagc.diffusion.independent_cascade import DiffusionResult
+from dagc.sparsifiers.gnn.gnn_sparsifier import GNNSparsifier
+from dagc.sparsifiers.classical.random_edge import random_edge_sparsify
+from dagc.sparsifiers.classical.effective_resistance import (
+    graph_sparsify_effective_resistance,
+)
+from dagc.sparsifiers.gnn.utils import sparsify_graph_with_model
+from dagc.graphs.seeds import generate_seed_set
+
 
 
 # ---------------------------------------------------------------------------
-# Basic set / scalar metrics
+# Simple spread difference helper (may be useful elsewhere)
 # ---------------------------------------------------------------------------
-
-def jaccard_similarity(set1: Set[Any], set2: Set[Any]) -> float:
-    """
-    Compute Jaccard similarity between two sets.
-
-        J(A, B) = |A ∩ B| / |A ∪ B|
-
-    Returns:
-        A float in [0, 1].
-
-    Note:
-        If both sets are empty, this returns 0.0 by convention.
-    """
-    if not set1 and not set2:
-        return 0.0
-
-    intersection = len(set1 & set2)
-    union = len(set1 | set2)
-
-    if union == 0:
-        return 0.0
-
-    return intersection / union
 
 
 def spread_difference(
@@ -85,6 +53,7 @@ def spread_difference(
 # Diffusion summaries
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class DiffusionSummary:
     """
@@ -99,6 +68,7 @@ class DiffusionSummary:
             Expected number of activated nodes:
                 expected_spread = sum_v activation_prob[v]
     """
+
     activation_prob: Dict[Any, float]
     expected_spread: float
 
@@ -160,120 +130,53 @@ def summarize_diffusion_results(
 
 
 # ---------------------------------------------------------------------------
-# Comparing two summaries (original vs compressed)
+# Simple “diffusion-preservation” metrics between two summaries
 # ---------------------------------------------------------------------------
 
-def compare_diffusion_summaries(
+
+def basic_diffusion_metrics(
     original: DiffusionSummary,
     compressed: DiffusionSummary,
-    nodes: Optional[Iterable[Any]] = None,
 ) -> Dict[str, float]:
     """
-    Compare two DiffusionSummary objects (original vs compressed graph).
+    Compute the two main diffusion-preservation metrics:
 
-    Metrics returned:
-        - spread_original: expected spread on original graph
-        - spread_compressed: expected spread on compressed graph
-        - spread_abs_diff: spread_compressed - spread_original
-        - spread_rel_error:
-              |spread_compressed - spread_original| / spread_original
-              (0 if spread_original == 0)
-        - prob_mse: mean squared error over activation probabilities
-        - prob_mae: mean absolute error over activation probabilities
+      1) spread_abs_diff:
+           |E[spread(G)] - E[spread(G')]|      (global behavior)
 
-    Args:
-        original: Summary from the original graph.
-        compressed: Summary from the compressed graph.
-        nodes:
-            Optional iterable of nodes over which to compute metrics.
-            If None, use the intersection of nodes that appear in both
-            summaries.
+      2) prob_mse:
+           (1/|V|) * sum_i (p_i^G - p_i^{G'})^2   (local / per-node behavior)
+         where p_i^G is the activation probability of node i in G.
 
-    Returns:
-        A dict of scalar metrics.
+    Here |V| is taken as the size of the union of node sets
+    from the two summaries, and missing nodes are treated as prob 0.0.
     """
-    if nodes is None:
-        nodes_set = set(original.activation_prob.keys()) & set(
-            compressed.activation_prob.keys()
-        )
-    else:
-        nodes_set = set(nodes)
+    # 1) Expected spread difference (absolute)
+    spread_abs_diff = abs(
+        float(original.expected_spread) - float(compressed.expected_spread)
+    )
 
-    if not nodes_set:
-        raise ValueError("compare_diffusion_summaries: no overlapping nodes to compare.")
+    # 2) MSE over per-node activation probabilities
+    nodes = set(original.activation_prob.keys()) | set(
+        compressed.activation_prob.keys()
+    )
 
-    # Basic spread metrics
-    spread_orig = original.expected_spread
-    spread_comp = compressed.expected_spread
-    spread_diff = spread_comp - spread_orig
-    if spread_orig > 0:
-        spread_rel_error = abs(spread_diff) / spread_orig
-    else:
-        spread_rel_error = 0.0
+    if not nodes:
+        return {
+            "spread_abs_diff": spread_abs_diff,
+            "prob_mse": 0.0,
+        }
 
-    # Activation-probability error metrics
-    sq_err = 0.0
-    abs_err = 0.0
-    n = 0
+    diffs = []
+    for v in nodes:
+        p_orig = float(original.activation_prob.get(v, 0.0))
+        p_comp = float(compressed.activation_prob.get(v, 0.0))
+        diffs.append((p_orig - p_comp) ** 2)
 
-    for v in nodes_set:
-        p_orig = original.activation_prob.get(v, 0.0)
-        p_comp = compressed.activation_prob.get(v, 0.0)
-        diff = p_comp - p_orig
-        sq_err += diff * diff
-        abs_err += abs(diff)
-        n += 1
-
-    prob_mse = sq_err / n
-    prob_mae = abs_err / n
+    prob_mse = sum(diffs) / len(diffs)
 
     return {
-        "spread_original": spread_orig,
-        "spread_compressed": spread_comp,
-        "spread_abs_diff": spread_diff,
-        "spread_rel_error": spread_rel_error,
+        "spread_abs_diff": spread_abs_diff,
         "prob_mse": prob_mse,
-        "prob_mae": prob_mae,
     }
 
-
-def topk_jaccard_from_summaries(
-    original: DiffusionSummary,
-    compressed: DiffusionSummary,
-    k: int,
-) -> float:
-    """
-    Compute Jaccard similarity between the top-K most activated nodes
-    (by activation probability) in the original vs compressed graph.
-
-    This measures how well the compressed graph preserves the identity of
-    the most "influenced" / "reachable" nodes under diffusion.
-
-    Args:
-        original: DiffusionSummary for the original graph.
-        compressed: DiffusionSummary for the compressed graph.
-        k: Number of top nodes to consider in each summary.
-
-    Returns:
-        Jaccard similarity in [0, 1] between the two top-K sets.
-    """
-    if k <= 0:
-        raise ValueError("k must be positive for topk_jaccard_from_summaries.")
-
-    # Sort nodes by activation probability (descending)
-    orig_sorted = sorted(
-        original.activation_prob.items(),
-        key=lambda x: x[1],
-        reverse=True,
-    )
-    comp_sorted = sorted(
-        compressed.activation_prob.items(),
-        key=lambda x: x[1],
-        reverse=True,
-    )
-
-    # Take top-k node IDs (handle case where there are fewer than k nodes)
-    orig_topk = {node for node, _ in orig_sorted[:k]}
-    comp_topk = {node for node, _ in comp_sorted[:k]}
-
-    return jaccard_similarity(orig_topk, comp_topk)

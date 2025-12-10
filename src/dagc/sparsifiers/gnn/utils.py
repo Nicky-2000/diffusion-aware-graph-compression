@@ -55,6 +55,7 @@ def compute_transition_matrix_from_graph(
     # For modest n and small k this is fine
     T_k = T.clone()
     for _ in range(num_steps - 1):
+        # print(f"Multiplying for step {_ + 2}...")
         T_k = T_k @ T  # Matrix multiplication
 
     return T_k
@@ -126,21 +127,27 @@ def sparsify_graph_with_model(
     # Step 4: Decide how many edges to keep 
     num_edges_original = G.number_of_edges()
     k = int(num_edges_original * keep_ratio)
+    k = max(1, k)
     
     # Step 5: Keep top-k edges by score
-    
     keep_edges = sorted(
-    undirected_scores.items(), 
-    key=lambda kv: kv[1],
-    reverse=True,
+        undirected_scores.items(), 
+        key=lambda kv: kv[1],
+        reverse=True,
     )[:k]
+    
+    # If scores can be negative (e.g. raw logits), shift them so weights ≥ 0
+    min_score = min(score for (_, score) in keep_edges)
+    shift = -min_score if min_score < 0 else 0.0
+    print(f"Shifting edge scores by {shift:.4f} to ensure non-negativity.")
     
     # Build sparsified graph H
     H = nx.Graph()
     H.add_nodes_from(G.nodes())
     
     for (u,v), score in keep_edges:
-        H.add_edge(u,v)
+        w = float(score + shift)
+        H.add_edge(u,v, weight=w)
     
     return H
     
