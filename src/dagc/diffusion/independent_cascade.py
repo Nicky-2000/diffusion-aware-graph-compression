@@ -62,6 +62,15 @@ def run_ic_diffusion(
     Returns:
         DiffusionResult containing activation by step and total activated nodes.
     """
+    
+    # for edge in graph.edges():
+    weight_max = 0.0
+    for u, v in graph.edges():
+        # find the greatest weight in the graph
+        if "weight" not in graph[u][v]:
+            graph[u][v]["weight"] = 1.0
+        weight_max = max(weight_max, graph[u][v]["weight"])
+            
     if rng is None:
         rng = random.Random()
 
@@ -87,7 +96,7 @@ def run_ic_diffusion(
             for v in graph.neighbors(u):
                 if v in ever_active:
                     continue  # already active before
-                if rng.random() < activation_prob*graph[u][v].get("weight", 1.0):
+                if rng.random() < 1-(1-activation_prob)**graph[u][v].get("weight", 1.0):
                     newly_active.add(v)
 
         if not newly_active:
@@ -98,3 +107,5 @@ def run_ic_diffusion(
         step += 1
 
     return DiffusionResult(activated_by_step)
+
+
