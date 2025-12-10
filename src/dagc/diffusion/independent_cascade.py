@@ -87,7 +87,7 @@ def run_ic_diffusion(
             for v in graph.neighbors(u):
                 if v in ever_active:
                     continue  # already active before
-                if rng.random() < activation_prob:
+                if rng.random() < activation_prob*graph[u][v].get("weight", 1.0):
                     newly_active.add(v)
 
         if not newly_active:

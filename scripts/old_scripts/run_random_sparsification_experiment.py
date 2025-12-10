@@ -22,6 +22,7 @@ import networkx as nx
 
 # Make sure we can import the dagc package from src/
 ROOT = Path(__file__).resolve().parents[1]
+ROOT=ROOT.parent  # adjust if needed
 sys.path.append(str(ROOT / "src"))
 
 from dagc.data.read_graphs import read_graph, generate_seed_set
