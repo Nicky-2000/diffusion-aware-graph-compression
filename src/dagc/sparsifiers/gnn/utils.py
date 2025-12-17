@@ -106,51 +106,51 @@ def sparsify_graph_with_model(
     model: GNNSparsifier,
     G: nx.Graph,
     keep_ratio: float = 0.5,
-    device="cpu"
+    device="cpu",
 ):
     """
-    Use a trained GNNSparsifier model to produce a new sparsified graph H
+    Use a trained GNNSparsifier model to produce a new sparsified graph H,
+    where each kept edge has an attribute `p` = predicted IC activation probability.
     """
-    
-    # Step 1: Convert to tensors 
+
+    # Step 1: Convert to tensors
     x, edge_index = graph_to_tensors(G, device=device)
-    
+
     # Step 2: Model forward pass
     model.eval()
     with torch.no_grad():
         out = model(x, edge_index)
-        probs = out.edge_probs # [num_edges_dir]
-    
+        probs = out.edge_probs  # [num_edges_dir], in (0,1)
+
     # Step 3: Convert directed probs back to undirected edge scores
+    # (assumed: returns {(u,v): score} with score in (0,1))
     undirected_scores = _collapse_directed_edge_probs(edge_index, probs)
-    
-    # Step 4: Decide how many edges to keep 
+
+    # Step 4: Decide how many edges to keep
     num_edges_original = G.number_of_edges()
     k = int(num_edges_original * keep_ratio)
     k = max(1, k)
-    
+
     # Step 5: Keep top-k edges by score
     keep_edges = sorted(
-        undirected_scores.items(), 
+        undirected_scores.items(),
         key=lambda kv: kv[1],
         reverse=True,
     )[:k]
-    
-    # If scores can be negative (e.g. raw logits), shift them so weights ≥ 0
-    min_score = min(score for (_, score) in keep_edges)
-    shift = -min_score if min_score < 0 else 0.0
-    print(f"Shifting edge scores by {shift:.4f} to ensure non-negativity.")
-    
+
     # Build sparsified graph H
     H = nx.Graph()
     H.add_nodes_from(G.nodes())
-    
-    for (u,v), score in keep_edges:
-        w = float(score + shift)
-        H.add_edge(u,v, weight=w)
-    
+
+    for (u, v), score in keep_edges:
+        p = float(score)
+        # safety clamp
+        if p < 0.0: p = 0.0
+        if p > 1.0: p = 1.0
+        H.add_edge(u, v, p=p)
+
     return H
-    
+
     
     
     

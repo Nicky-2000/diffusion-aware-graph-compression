@@ -55,13 +55,14 @@ def evaluate_one_graph(
     # 1) Seed set (same seeds for all sparsifiers)
     seed_set = generate_seed_set(G, k=seed_set_size, strategy="high_degree")
 
-    # 2) Original graph IC summary (ground truth diffusion behavior)
+    # 2) Original graph IC summary
     orig_summary = run_ic_experiment(
         graph=G,
         seed_set=seed_set,
         num_runs=num_runs,
         activation_prob=activation_prob,
         base_seed=base_seed,
+        edge_prob_mode="weighted_attempts",
     )
 
     # 3) Random edge sparsifier
@@ -78,9 +79,10 @@ def evaluate_one_graph(
         num_runs=num_runs,
         activation_prob=activation_prob,
         base_seed=base_seed + 1000,
+        edge_prob_mode="weighted_attempts",
     )
 
-    # 4) GNN sparsifier (your weighted GNN-based sparsified graph)
+    # 4) GNN sparsifier 
     H_gnn = sparsify_graph_with_model(
         model=model,
         G=G,
@@ -92,8 +94,10 @@ def evaluate_one_graph(
         graph=H_gnn,
         seed_set=seed_set,
         num_runs=num_runs,
-        activation_prob=activation_prob,
+        activation_prob=activation_prob,  # used only as fallback if edge missing "p"
         base_seed=base_seed + 2000,
+        edge_prob_mode="direct_prob",
+        edge_prob_attr="p",
     )
 
     # 5) Effective resistance sparsifier
@@ -110,6 +114,7 @@ def evaluate_one_graph(
         num_runs=num_runs,
         activation_prob=activation_prob,
         base_seed=base_seed + 4000,
+        edge_prob_mode="weighted_attempts",
     )
 
     # 6) Simple metrics vs original for each sparsifier

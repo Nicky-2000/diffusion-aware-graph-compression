@@ -34,6 +34,11 @@ class DiffusionResult:
         """Total number of activated nodes."""
         return len(self.all_activated)
 
+from typing import List, Set, Any, Optional, Literal
+import random
+import math
+import networkx as nx
+
 
 def run_ic_diffusion(
     graph: nx.Graph,
@@ -41,43 +46,33 @@ def run_ic_diffusion(
     activation_prob: float = 0.1,
     max_steps: Optional[int] = None,
     rng: Optional[random.Random] = None,
+    edge_prob_mode: Literal["weighted_attempts", "direct_prob"] = "weighted_attempts",
+    edge_prob_attr: str = "p",          # used when edge_prob_mode="direct_prob"
+    edge_weight_attr: str = "weight",   # used when edge_prob_mode="weighted_attempts"
+    clamp_eps: float = 1e-9,
 ) -> DiffusionResult:
     """
     Run one Independent Cascade (IC) diffusion simulation.
 
-    Model:
-        - Start with seed_set active at step 0.
-        - At each step t, nodes that became active at step t
-          get *one chance* to activate each currently inactive neighbor
-          with probability `activation_prob`.
-        - Process continues until no new activations occur, or max_steps is reached.
+    Two supported modes:
+      1) weighted_attempts (default):
+           p_uv = 1 - (1 - activation_prob) ** w_uv
+         where w_uv is read from edge attribute `edge_weight_attr` (default "weight").
+
+      2) direct_prob:
+           p_uv = graph[u][v][edge_prob_attr]
+         (fallback to activation_prob if missing). This is the mode for the GNN,
+         where the model predicts per-edge IC probabilities.
 
     Args:
-        graph: Input NetworkX graph.
-        seed_set: Initial active nodes.
-        activation_prob: Probability of activation along each edge.
-        max_steps: Optional max number of steps to run. If None, run until no change.
-        rng: Optional random.Random instance for reproducibility.
-
-    Returns:
-        DiffusionResult containing activation by step and total activated nodes.
+        activation_prob: Base probability p0 (used directly in direct_prob only as fallback,
+                         and in weighted_attempts as the base attempt prob).
     """
-    
-    # for edge in graph.edges():
-    weight_max = 0.0
-    for u, v in graph.edges():
-        # find the greatest weight in the graph
-        if "weight" not in graph[u][v]:
-            graph[u][v]["weight"] = 1.0
-        weight_max = max(weight_max, graph[u][v]["weight"])
-            
     if rng is None:
         rng = random.Random()
 
-    # copy seed set so we don't mutate input
     seed_set = set(seed_set)
 
-    # step 0 = seeds
     activated_by_step: List[Set[Any]] = [set(seed_set)]
     ever_active: Set[Any] = set(seed_set)
 
@@ -88,15 +83,35 @@ def run_ic_diffusion(
 
         frontier = activated_by_step[-1]
         if not frontier:
-            break  # nothing left to spread from
+            break
 
         newly_active: Set[Any] = set()
 
         for u in frontier:
             for v in graph.neighbors(u):
                 if v in ever_active:
-                    continue  # already active before
-                if rng.random() < 1-(1-activation_prob)**graph[u][v].get("weight", 1.0):
+                    continue
+
+                if edge_prob_mode == "direct_prob":
+                    # GNN: edge stores p_uv directly (in [0,1])
+                    # p_uv = graph[u][v].get(edge_prob_attr, activation_prob)
+                    p_uv = activation_prob
+
+                elif edge_prob_mode == "weighted_attempts":
+                    # Effective resistance / weighted IC: use the "attempts" mapping
+                    w_uv = graph[u][v].get(edge_weight_attr, 1.0)
+                    # clamp for numerical sanity
+                    p0 = min(max(activation_prob, clamp_eps), 1.0 - clamp_eps)
+                    w_uv = max(float(w_uv), 0.0)
+                    p_uv = 1.0 - (1.0 - p0) ** w_uv
+
+                else:
+                    raise ValueError(f"Unknown edge_prob_mode={edge_prob_mode}")
+
+                # final clamp just in case
+                p_uv = min(max(float(p_uv), 0.0), 1.0)
+
+                if rng.random() < p_uv:
                     newly_active.add(v)
 
         if not newly_active:
@@ -107,5 +122,3 @@ def run_ic_diffusion(
         step += 1
 
     return DiffusionResult(activated_by_step)
-
-

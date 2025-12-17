@@ -96,6 +96,7 @@ def random_edge_sparsify(
 
         # If removal disconnects the graph, undo it
         if not nx.is_connected(H):
+            print(f"Restoring edge ({u}, {v}) to preserve connectivity.")
             H.add_edge(u, v)
 
     return CompressionResult(H)

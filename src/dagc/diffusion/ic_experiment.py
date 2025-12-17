@@ -15,25 +15,10 @@ def run_ic_experiment(
     activation_prob: float = 0.1,
     base_seed: int = 12345,
     max_steps: Optional[int] = None,
+    edge_prob_mode: str = "weighted_attempts",   # "weighted_attempts" or "direct_prob"
+    edge_prob_attr: str = "p",                  # used if direct_prob
+    edge_weight_attr: str = "weight",           # used if weighted_attempts
 ):
-    """
-    Run Independent Cascade (IC) diffusion multiple times on a graph and
-    return the summarized diffusion behavior.
-
-    Args:
-        graph: NetworkX graph.
-        seed_set: initial active nodes.
-        num_runs: number of Monte Carlo simulations.
-        activation_prob: probability of activation along each edge.
-        base_seed: base seed for reproducibility across graphs/methods.
-        max_steps: optional cap on IC steps.
-
-    Returns:
-        A summary object from summarize_diffusion_results, e.g. with:
-          - expected_spread
-          - activation_prob_by_node
-          - etc.
-    """
     seed_set = list(seed_set)
     results = []
 
@@ -45,6 +30,9 @@ def run_ic_experiment(
             activation_prob=activation_prob,
             max_steps=max_steps,
             rng=rng,
+            edge_prob_mode=edge_prob_mode,
+            edge_prob_attr=edge_prob_attr,
+            edge_weight_attr=edge_weight_attr,
         )
         results.append(res)
 
